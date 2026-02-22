@@ -11,7 +11,6 @@ list(
     APPEND
     CMAKE_PREFIX_PATH
     "${CMAKE_CURRENT_LIST_DIR}/cmake"
-    "${CMAKE_CURRENT_LIST_DIR}/cmake/description"
     "${CMAKE_CURRENT_LIST_DIR}/cmake/code_quality")
 
 if(CMAKE_CROSSCOMPILING)
@@ -19,12 +18,10 @@ if(CMAKE_CROSSCOMPILING)
         APPEND
         CMAKE_FIND_ROOT_PATH
         "${CMAKE_CURRENT_LIST_DIR}/cmake"
-        "${CMAKE_CURRENT_LIST_DIR}/cmake/description"
         "${CMAKE_CURRENT_LIST_DIR}/cmake/code_quality")
 endif()
 
 find_package(warnings CONFIG REQUIRED)
-find_package(package_description CONFIG REQUIRED)
 
 find_package(clang_format CONFIG REQUIRED)
 find_package(clang_tidy CONFIG REQUIRED)
