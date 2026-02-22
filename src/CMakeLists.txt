@@ -84,7 +84,8 @@ add_custom_target(
 
 add_dependencies(symlink_gmod gmod_tracy)
 
-# TODO: use adequate launch command
+# TODO: use adequate launch command using user steam flags and etc but with
+# imidiate map load, idk
 add_custom_target(
     launch_gmod
     COMMAND
