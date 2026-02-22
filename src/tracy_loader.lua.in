@@ -1,9 +1,14 @@
 -- tracy_loader.lua
--- minimal loader + zones + net wrapping + log->tracy helper (без gm_logging)
+-- Tracy profiler integration for Garry's Mod
+-- Frame sync, zone profiling, console capture, error tracking, telemetry
+--
+-- All message-heavy features are rate-limited and gated behind
+-- TracyIsConnected to prevent ring-buffer overflow / process kill.
 
-------------------------
--- load tracy module  --
-------------------------
+-- ══════════════════════════════════════════════════════════
+--  Module Loading
+-- ══════════════════════════════════════════════════════════
+
 if tracy ~= nil and type(tracy) == "table" then
     print("[Tracy] already loaded, skipping duplicate require")
     return
@@ -15,18 +20,10 @@ if not ok then
     return
 end
 
--- gmod can return table / true / nil; module may set _G.tracy directly
 if type(result) == "table" then
     tracy = result
 elseif type(tracy) ~= "table" then
     print("[Tracy] error: module loaded but tracy table not found")
-    print(
-        "[Tracy]   require returned: "
-            .. type(result)
-            .. " = "
-            .. tostring(result)
-    )
-    print("[Tracy]   _G.tracy type:    " .. type(tracy))
     return
 end
 
@@ -35,175 +32,1149 @@ if type(tracy.FrameMark) ~= "function" then
     return
 end
 
-print("[Tracy] module ready, functions: " .. table.concat(
-    (function()
-        local keys, i = {}, 1
-        for k in pairs(tracy) do
-            keys[i] = k
-            i = i + 1
-        end
-        table.sort(keys)
-        return keys
-    end)(),
-    ", "
-))
+local realm_tag = SERVER and "server" or "client"
+print("[Tracy] module ready (" .. realm_tag .. ")")
 
--------------------------------------
--- cached locals for hot functions --
--------------------------------------
+-- ══════════════════════════════════════════════════════════
+--  Cached Locals
+-- ══════════════════════════════════════════════════════════
+
 local frame_mark = tracy.FrameMark
-local frame_mark_start = tracy.FrameMarkStart -- present
-local frame_mark_end = tracy.FrameMarkEnd -- present
-local frame_mark_named = tracy.FrameMarkNamed -- present
+local frame_mark_start = tracy.FrameMarkStart
+local frame_mark_end = tracy.FrameMarkEnd
 
-local zone_begin_n = tracy.ZoneBeginN -- present
-local zone_end = tracy.ZoneEnd -- present
-local zone_name = tracy.ZoneName -- present
-local zone_text = tracy.ZoneText -- present
-local zone_value = tracy.ZoneValue -- present
-local zone_color = tracy.ZoneColor -- present
+local zone_begin = tracy.ZoneBeginN
+local zone_end = tracy.ZoneEnd
+local zone_name = tracy.ZoneName
+local zone_text = tracy.ZoneText
+local zone_value = tracy.ZoneValue
+local zone_color = tracy.ZoneColor
 
-local tracy_message = tracy.Message -- present
-local tracy_msg_color = tracy.MessageColor -- present
-local tracy_plot = tracy.PlotValue -- present
+local tmsg = tracy.Message
+local tmsg_color = tracy.MessageColor
+local tplot = tracy.PlotValue
+local is_connected = tracy.IsConnected
 
-------------------------
--- per-frame mark     --
-------------------------
-hook.Add("Think", "TracyFrameMark", function()
-    frame_mark()
+local is_server = SERVER == true
+local is_client = CLIENT == true
+
+local HOOK_PREFIX = "Tracy_"
+
+-- ══════════════════════════════════════════════════════════
+--  ConVars — Control verbosity at runtime
+-- ══════════════════════════════════════════════════════════
+
+local cv_console = CreateConVar(
+    "tracy_log_console",
+    "1",
+    FCVAR_ARCHIVE,
+    "Log print/Msg/Warning to Tracy messages"
+)
+local cv_net = CreateConVar(
+    "tracy_log_net",
+    "1",
+    FCVAR_ARCHIVE,
+    "Log net library calls to Tracy messages"
+)
+local cv_entities = CreateConVar(
+    "tracy_log_entities",
+    "0",
+    FCVAR_ARCHIVE,
+    "Log entity create/remove (VERY noisy)"
+)
+local cv_convars = CreateConVar(
+    "tracy_log_convars",
+    "0",
+    FCVAR_ARCHIVE,
+    "Log convar changes (noisy during load)"
+)
+local cv_files = CreateConVar(
+    "tracy_log_files",
+    "0",
+    FCVAR_ARCHIVE,
+    "Log file I/O operations"
+)
+local cv_sql =
+    CreateConVar("tracy_log_sql", "1", FCVAR_ARCHIVE, "Log sql.Query calls")
+local cv_http =
+    CreateConVar("tracy_log_http", "1", FCVAR_ARCHIVE, "Log HTTP requests")
+local cv_timers = CreateConVar(
+    "tracy_log_timers",
+    "0",
+    FCVAR_ARCHIVE,
+    "Log timer creation (noisy)"
+)
+local cv_players = CreateConVar(
+    "tracy_log_players",
+    "1",
+    FCVAR_ARCHIVE,
+    "Log player events (server)"
+)
+local cv_budget = CreateConVar(
+    "tracy_msg_budget",
+    "50",
+    FCVAR_ARCHIVE,
+    "Max Tracy messages per frame (0=unlimited)"
+)
+
+-- ══════════════════════════════════════════════════════════
+--  Rate Limiter & Guarded Message Sending
+-- ══════════════════════════════════════════════════════════
+--
+--  This is the core fix for the "process killed on attach"
+--  problem.  Tracy's ring buffer is finite; if we push more
+--  messages than the profiler can drain, it overflows and
+--  Tracy calls abort().
+--
+--  Rules:
+--    1. Never send a message if the profiler is not connected.
+--    2. Enforce a per-frame budget (default 50 messages).
+--    3. Provide a re-entrancy guard so our own print() calls
+--       inside the loader don't create an infinite loop.
+
+local msg_count_this_frame = 0
+local in_tracy_send = false -- re-entrancy guard
+
+local CLR = {
+    PRINT = { 200, 200, 200 },
+    MSG = { 180, 180, 180 },
+    WARNING = { 255, 200, 0 },
+    ERROR = { 255, 60, 60 },
+    LUA_ERR = { 255, 0, 0 },
+    NET = { 100, 180, 255 },
+    CONC = { 120, 220, 120 },
+    HTTP = { 200, 140, 255 },
+    TIMER = { 255, 180, 100 },
+    FILE = { 180, 220, 180 },
+    SQL = { 255, 220, 140 },
+    HOOK = { 140, 200, 220 },
+    ENTLIFE = { 220, 180, 255 },
+    CONVAR = { 180, 255, 180 },
+}
+
+--- Send a message to Tracy with all safety checks.
+--- Returns false if the message was dropped.
+local function tsend(text, clr)
+    -- gate 1: re-entrancy (prevents feedback loops)
+    if in_tracy_send then
+        return false
+    end
+    -- gate 2: profiler must be connected
+    if not is_connected or not is_connected() then
+        return false
+    end
+    -- gate 3: per-frame budget
+    local budget = cv_budget:GetInt()
+    if budget > 0 and msg_count_this_frame >= budget then
+        return false
+    end
+    -- gate 4: must have something to send
+    if not text or #text == 0 then
+        return false
+    end
+
+    in_tracy_send = true
+    msg_count_this_frame = msg_count_this_frame + 1
+
+    if clr and tmsg_color then
+        tmsg_color(text, clr[1], clr[2], clr[3])
+    elseif tmsg then
+        tmsg(text)
+    end
+
+    in_tracy_send = false
+    return true
+end
+
+-- Reset budget every frame
+hook.Add("Think", HOOK_PREFIX .. "ResetBudget", function()
+    msg_count_this_frame = 0
 end)
 
----------------------------------
--- generic zone wrapper helper --
----------------------------------
-local function tracy_zone(name, fn)
+-- ══════════════════════════════════════════════════════════
+--  Frame Synchronisation
+-- ══════════════════════════════════════════════════════════
+
+if is_client then
+    hook.Add("PostRender", HOOK_PREFIX .. "FrameMark", function()
+        msg_count_this_frame = 0 -- also reset on render boundary
+        frame_mark()
+    end)
+
+    hook.Add("PreRender", HOOK_PREFIX .. "RenderStart", function()
+        frame_mark_start("Render")
+    end)
+    hook.Add("PostRender", HOOK_PREFIX .. "RenderEnd", function()
+        frame_mark_end("Render")
+    end)
+else
+    hook.Add("Tick", HOOK_PREFIX .. "FrameMark", function()
+        frame_mark()
+    end)
+end
+
+hook.Add("Think", HOOK_PREFIX .. "ThinkStart", function()
+    frame_mark_start("Think")
+end)
+hook.Add("Think", HOOK_PREFIX .. "zz_ThinkEnd", function()
+    frame_mark_end("Think")
+end)
+
+-- ══════════════════════════════════════════════════════════
+--  Zone Wrappers (handle-correct, pcall-safe)
+-- ══════════════════════════════════════════════════════════
+
+local function tracy_zone_wrap(label, fn)
     if type(fn) ~= "function" then
         return fn
     end
-
-    if not zone_begin_n or not zone_end then
+    if not zone_begin or not zone_end then
         return fn
     end
 
     return function(...)
-        zone_begin_n(name)
-        local r1, r2, r3, r4, r5, r6 = fn(...)
-        zone_end()
+        local h = zone_begin(label)
+        local success, r1, r2, r3, r4, r5, r6 = pcall(fn, ...)
+        zone_end(h)
+        if not success then
+            error(r1, 2)
+        end
         return r1, r2, r3, r4, r5, r6
     end
 end
 
-_G.tracy_zone = tracy_zone
+_G.tracy_zone = tracy_zone_wrap
+_G.tracy_zone_safe = tracy_zone_wrap
 
-----------------------------------------
--- example: wrap a specific HUDPaint  --
-----------------------------------------
+function _G.tracy_run(label, fn, ...)
+    if not zone_begin or not zone_end then
+        return fn(...)
+    end
+    local h = zone_begin(label)
+    local success, r1, r2, r3, r4, r5, r6 = pcall(fn, ...)
+    zone_end(h)
+    if not success then
+        error(r1, 2)
+    end
+    return r1, r2, r3, r4, r5, r6
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Console Message Capture
+-- ══════════════════════════════════════════════════════════
+
+-- Helper: concatenate varargs into a single string
+local function varargs_to_string(...)
+    local parts = {}
+    local n = select("#", ...)
+    for i = 1, n do
+        parts[i] = tostring(select(i, ...))
+    end
+    return table.concat(parts, "\t")
+end
+
+-- ── print ────────────────────────────────────────────────
 do
-    local hooks = hook.GetTable()
-    local hud_tbl = hooks and hooks.HUDPaint
-    local key = "MyHUDPaint"
+    local orig_print = print
 
-    if hud_tbl and type(hud_tbl[key]) == "function" then
-        hud_tbl[key] = tracy_zone("HUDPaint:" .. key, hud_tbl[key])
-        hook.Add("HUDPaint", key, hud_tbl[key])
-        print("[Tracy] wrapped HUDPaint:" .. key)
+    function _G.print(...)
+        orig_print(...)
+        if cv_console:GetBool() then
+            tsend("[print] " .. varargs_to_string(...), CLR.PRINT)
+        end
     end
 end
 
-----------------------------------------
--- net.Receive wrapper with zones     --
-----------------------------------------
-if net ~= nil then
-    local old_net_receive = net.Receive
+-- ── Msg ──────────────────────────────────────────────────
+if Msg then
+    local orig_Msg = Msg
+    function _G.Msg(...)
+        orig_Msg(...)
+        if cv_console:GetBool() then
+            tsend("[Msg] " .. varargs_to_string(...), CLR.MSG)
+        end
+    end
+end
 
+-- ── MsgN ─────────────────────────────────────────────────
+if MsgN then
+    local orig_MsgN = MsgN
+    function _G.MsgN(...)
+        orig_MsgN(...)
+        if cv_console:GetBool() then
+            tsend("[MsgN] " .. varargs_to_string(...), CLR.MSG)
+        end
+    end
+end
+
+-- ── MsgC ─────────────────────────────────────────────────
+if MsgC then
+    local orig_MsgC = MsgC
+    function _G.MsgC(color, ...)
+        orig_MsgC(color, ...)
+        if not cv_console:GetBool() then
+            return
+        end
+
+        local text = "[MsgC] " .. varargs_to_string(...)
+        if tmsg_color and type(color) == "table" and color.r then
+            -- re-entrancy guard is inside tsend; safe to call directly
+            if is_connected and is_connected() then
+                in_tracy_send = true
+                tmsg_color(text, color.r, color.g, color.b)
+                msg_count_this_frame = msg_count_this_frame + 1
+                in_tracy_send = false
+            end
+        else
+            tsend(text, CLR.MSG)
+        end
+    end
+end
+
+-- ── ErrorNoHalt ──────────────────────────────────────────
+if ErrorNoHalt then
+    local orig_ErrorNoHalt = ErrorNoHalt
+    function _G.ErrorNoHalt(...)
+        orig_ErrorNoHalt(...)
+        tsend("[ErrorNoHalt] " .. varargs_to_string(...), CLR.ERROR)
+    end
+end
+
+-- ── ErrorNoHaltWithStack ─────────────────────────────────
+if ErrorNoHaltWithStack then
+    local orig_ErrorNoHaltWithStack = ErrorNoHaltWithStack
+    function _G.ErrorNoHaltWithStack(...)
+        orig_ErrorNoHaltWithStack(...)
+        tsend("[ErrorNoHaltWithStack] " .. varargs_to_string(...), CLR.ERROR)
+    end
+end
+
+-- ── Warning ──────────────────────────────────────────────
+if _G.Warning then
+    local orig_Warning = _G.Warning
+    function _G.Warning(...)
+        orig_Warning(...)
+        tsend("[Warning] " .. varargs_to_string(...), CLR.WARNING)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Lua Error Capture
+-- ══════════════════════════════════════════════════════════
+
+hook.Add(
+    "OnLuaError",
+    HOOK_PREFIX .. "LuaError",
+    function(err, _, stack, name, id)
+        -- always send errors regardless of budget (important diagnostics)
+        if not is_connected or not is_connected() then
+            return
+        end
+
+        local msg = "[LuaError]"
+        if name then
+            msg = msg .. " " .. tostring(name)
+        end
+        if id then
+            msg = msg .. " (id:" .. tostring(id) .. ")"
+        end
+        msg = msg .. " | " .. tostring(err)
+
+        if type(stack) == "table" then
+            local limit = math.min(#stack, 6)
+            for i = 1, limit do
+                local frame = stack[i]
+                local src = frame.File or "?"
+                local line = frame.CurrentLine or "?"
+                local fn = frame.Name or "?"
+                msg = msg
+                    .. "\n  #"
+                    .. i
+                    .. " "
+                    .. src
+                    .. ":"
+                    .. line
+                    .. " in "
+                    .. fn
+            end
+            if #stack > 6 then
+                msg = msg .. "\n  ... +" .. (#stack - 6) .. " more"
+            end
+        end
+
+        -- bypass budget for errors — these are always critical
+        in_tracy_send = true
+        if tmsg_color then
+            tmsg_color(msg, CLR.LUA_ERR[1], CLR.LUA_ERR[2], CLR.LUA_ERR[3])
+        elseif tmsg then
+            tmsg(msg)
+        end
+        in_tracy_send = false
+    end
+)
+
+-- ══════════════════════════════════════════════════════════
+--  Automatic Hook Profiling
+-- ══════════════════════════════════════════════════════════
+
+local PROFILED_HOOKS_CL = {
+    "Think",
+    "Tick",
+    "HUDPaint",
+    "HUDPaintBackground",
+    "PreDrawHUD",
+    "PostDrawHUD",
+    "PreDrawOpaqueRenderables",
+    "PostDrawOpaqueRenderables",
+    "PreDrawTranslucentRenderables",
+    "PostDrawTranslucentRenderables",
+    "PreDrawEffects",
+    "PostDrawEffects",
+    "RenderScene",
+    "CalcView",
+    "CalcViewModelView",
+    "InputMouseApply",
+    "CreateMove",
+    "PrePlayerDraw",
+    "PostPlayerDraw",
+    "DrawOverlay",
+    "PreDrawSkyBox",
+    "PostDrawSkyBox",
+    "PostDrawViewModel",
+    "PreDrawViewModel",
+    "GUIMousePressed",
+    "GUIMouseReleased",
+    "PlayerBindPress",
+}
+
+local PROFILED_HOOKS_SV = {
+    "Think",
+    "Tick",
+    "PlayerTick",
+    "SetupMove",
+    "Move",
+    "FinishMove",
+    "EntityTakeDamage",
+    "PlayerSay",
+    "PlayerSpawn",
+    "PlayerDeath",
+    "DoPlayerDeath",
+    "CanPlayerSuicide",
+    "PlayerDisconnected",
+    "PlayerInitialSpawn",
+    "PlayerConnect",
+    "OnEntityCreated",
+    "EntityRemoved",
+    "PlayerSwitchWeapon",
+    "PlayerUse",
+    "AcceptInput",
+    "EntityKeyValue",
+    "AllowPlayerPickup",
+    "GravGunOnPickedUp",
+    "GravGunOnDropped",
+    "SetupPlayerVisibility",
+}
+
+local profiled_hooks = is_client and PROFILED_HOOKS_CL or PROFILED_HOOKS_SV
+
+local function profile_hook_event(event)
+    local tbl = hook.GetTable()
+    local hooks_for = tbl and tbl[event]
+    if not hooks_for then
+        return 0
+    end
+
+    local count = 0
+    for name, fn in pairs(hooks_for) do
+        if
+            type(fn) == "function"
+            and type(name) == "string"
+            and name:sub(1, #HOOK_PREFIX) ~= HOOK_PREFIX
+        then
+            local label = event .. "/" .. name
+            hook.Add(event, name, tracy_zone_wrap(label, fn))
+            count = count + 1
+        end
+    end
+    return count
+end
+
+timer.Simple(0, function()
+    local total = 0
+    for _, event in ipairs(profiled_hooks) do
+        total = total + profile_hook_event(event)
+    end
+    print(
+        "[Tracy] auto-profiled "
+            .. total
+            .. " hook callbacks across "
+            .. #profiled_hooks
+            .. " events"
+    )
+end)
+
+-- ══════════════════════════════════════════════════════════
+--  net Library Wrappers
+-- ══════════════════════════════════════════════════════════
+
+if net ~= nil then
+    local orig_receive = net.Receive
     function net.Receive(name, fn)
         if type(fn) == "function" then
-            fn = tracy_zone("net:" .. tostring(name), fn)
+            local label = "net:" .. tostring(name)
+            local inner = tracy_zone_wrap(label, fn)
+            fn = function(len, ply)
+                if cv_net:GetBool() then
+                    tsend(
+                        "[net.Receive] "
+                            .. tostring(name)
+                            .. " ("
+                            .. tostring(len)
+                            .. " bits)",
+                        CLR.NET
+                    )
+                end
+                return inner(len, ply)
+            end
         end
-        return old_net_receive(name, fn)
+        return orig_receive(name, fn)
     end
 
-    print("[Tracy] net.Receive hooked for zone profiling")
-end
+    local orig_start = net.Start
+    function net.Start(name, unreliable)
+        if cv_net:GetBool() then
+            tsend(
+                "[net.Start] "
+                    .. tostring(name)
+                    .. (unreliable and " (unreliable)" or ""),
+                CLR.NET
+            )
+        end
+        return orig_start(name, unreliable)
+    end
 
---------------------------------------
--- simple print -> tracy bridge     --
---------------------------------------
--- if хочешь видеть свои print'ы в Tracy, просто вызывай tracy_log()
--- вручную в коде; оборачивать глобальный print в gmod я бы не стал.
+    if is_client and net.SendToServer then
+        local orig_send = net.SendToServer
+        function net.SendToServer()
+            if cv_net:GetBool() then
+                tsend("[net.SendToServer]", CLR.NET)
+            end
+            return orig_send()
+        end
+    end
 
-local function tracy_log(msg)
-    if tracy_message then
-        tracy_message(tostring(msg))
+    if is_server then
+        if net.Send then
+            local orig_send = net.Send
+            function net.Send(ply)
+                if cv_net:GetBool() then
+                    local target = "?"
+                    if IsValid(ply) and ply.Nick then
+                        target = ply:Nick()
+                    elseif type(ply) == "table" then
+                        target = #ply .. " players"
+                    end
+                    tsend("[net.Send] -> " .. target, CLR.NET)
+                end
+                return orig_send(ply)
+            end
+        end
+
+        if net.Broadcast then
+            local orig_bc = net.Broadcast
+            function net.Broadcast()
+                if cv_net:GetBool() then
+                    tsend("[net.Broadcast]", CLR.NET)
+                end
+                return orig_bc()
+            end
+        end
     end
 end
 
-local function tracy_log_color(msg, r, g, b)
-    if tracy_msg_color then
-        tracy_msg_color(tostring(msg), r or 255, g or 255, b or 255)
-    elseif tracy_message then
-        tracy_message(tostring(msg))
+-- ══════════════════════════════════════════════════════════
+--  concommand Wrapper
+-- ══════════════════════════════════════════════════════════
+
+if concommand and concommand.Add then
+    local orig_cc_add = concommand.Add
+    function concommand.Add(name, callback, autocomplete, help, flags)
+        if type(callback) == "function" then
+            local label = "concommand:" .. tostring(name)
+            local inner = tracy_zone_wrap(label, callback)
+            callback = function(ply, cmd, args, argStr)
+                tsend(
+                    "[concommand] "
+                        .. tostring(cmd)
+                        .. " "
+                        .. tostring(argStr or ""),
+                    CLR.CONC
+                )
+                return inner(ply, cmd, args, argStr)
+            end
+        end
+        return orig_cc_add(name, callback, autocomplete, help, flags)
     end
 end
 
-_G.tracy_log = tracy_log
-_G.tracy_log_color = tracy_log_color
+-- ══════════════════════════════════════════════════════════
+--  HTTP Request Logging
+-- ══════════════════════════════════════════════════════════
 
---------------------------------------
--- helper: frame scopes by name     --
---------------------------------------
--- удобный хелпер: оборачиваешь целый тик/фрейм в именованный scope
+if HTTP then
+    local orig_HTTP = HTTP
+    function _G.HTTP(params)
+        if type(params) == "table" and cv_http:GetBool() then
+            tsend(
+                "[HTTP] "
+                    .. tostring(params.method or "GET")
+                    .. " "
+                    .. tostring(params.url or "?"),
+                CLR.HTTP
+            )
+
+            if type(params.success) == "function" then
+                params.success = tracy_zone_wrap(
+                    "HTTP:ok:" .. tostring(params.url),
+                    params.success
+                )
+            end
+            if type(params.failed) == "function" then
+                params.failed = tracy_zone_wrap(
+                    "HTTP:fail:" .. tostring(params.url),
+                    params.failed
+                )
+            end
+        end
+        return orig_HTTP(params)
+    end
+end
+
+if http and http.Fetch then
+    local orig_fetch = http.Fetch
+    function http.Fetch(url, onSuccess, onFailure, headers)
+        if cv_http:GetBool() then
+            tsend("[http.Fetch] " .. tostring(url), CLR.HTTP)
+        end
+        if type(onSuccess) == "function" then
+            onSuccess =
+                tracy_zone_wrap("http.Fetch:ok:" .. tostring(url), onSuccess)
+        end
+        if type(onFailure) == "function" then
+            onFailure =
+                tracy_zone_wrap("http.Fetch:fail:" .. tostring(url), onFailure)
+        end
+        return orig_fetch(url, onSuccess, onFailure, headers)
+    end
+end
+
+if http and http.Post then
+    local orig_post = http.Post
+    function http.Post(url, params, onSuccess, onFailure, headers)
+        if cv_http:GetBool() then
+            tsend("[http.Post] " .. tostring(url), CLR.HTTP)
+        end
+        if type(onSuccess) == "function" then
+            onSuccess =
+                tracy_zone_wrap("http.Post:ok:" .. tostring(url), onSuccess)
+        end
+        if type(onFailure) == "function" then
+            onFailure =
+                tracy_zone_wrap("http.Post:fail:" .. tostring(url), onFailure)
+        end
+        return orig_post(url, params, onSuccess, onFailure, headers)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Timer Wrapper
+-- ══════════════════════════════════════════════════════════
+
+if timer then
+    if timer.Create then
+        local orig_tc = timer.Create
+        function timer.Create(identifier, delay, reps, func)
+            if cv_timers:GetBool() then
+                tsend(
+                    "[timer.Create] "
+                        .. tostring(identifier)
+                        .. " delay="
+                        .. tostring(delay)
+                        .. " reps="
+                        .. tostring(reps),
+                    CLR.TIMER
+                )
+            end
+            if type(func) == "function" then
+                func = tracy_zone_wrap("timer:" .. tostring(identifier), func)
+            end
+            return orig_tc(identifier, delay, reps, func)
+        end
+    end
+
+    if timer.Simple then
+        local orig_ts = timer.Simple
+        local simple_idx = 0
+        function timer.Simple(delay, func)
+            simple_idx = simple_idx + 1
+            if cv_timers:GetBool() then
+                tsend(
+                    "[timer.Simple] #"
+                        .. simple_idx
+                        .. " delay="
+                        .. tostring(delay),
+                    CLR.TIMER
+                )
+            end
+            if type(func) == "function" then
+                func = tracy_zone_wrap("timer.Simple#" .. simple_idx, func)
+            end
+            return orig_ts(delay, func)
+        end
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+--  File I/O Logging (off by default — very noisy)
+-- ══════════════════════════════════════════════════════════
+
+if file then
+    if file.Read then
+        local orig_read = file.Read
+        function file.Read(fileName, path)
+            if cv_files:GetBool() then
+                tsend(
+                    "[file.Read] "
+                        .. tostring(fileName)
+                        .. " ("
+                        .. tostring(path or "DATA")
+                        .. ")",
+                    CLR.FILE
+                )
+            end
+            return orig_read(fileName, path)
+        end
+    end
+
+    if file.Write then
+        local orig_write = file.Write
+        function file.Write(fileName, content)
+            if cv_files:GetBool() then
+                local size = type(content) == "string" and #content or 0
+                tsend(
+                    "[file.Write] "
+                        .. tostring(fileName)
+                        .. " ("
+                        .. size
+                        .. " bytes)",
+                    CLR.FILE
+                )
+            end
+            return orig_write(fileName, content)
+        end
+    end
+
+    if file.Append then
+        local orig_append = file.Append
+        function file.Append(fileName, content)
+            if cv_files:GetBool() then
+                local size = type(content) == "string" and #content or 0
+                tsend(
+                    "[file.Append] "
+                        .. tostring(fileName)
+                        .. " (+"
+                        .. size
+                        .. " bytes)",
+                    CLR.FILE
+                )
+            end
+            return orig_append(fileName, content)
+        end
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+--  SQL Query Logging
+-- ══════════════════════════════════════════════════════════
+
+if sql and sql.Query then
+    local orig_query = sql.Query
+    function sql.Query(query)
+        if cv_sql:GetBool() then
+            local preview = tostring(query)
+            if #preview > 120 then
+                preview = preview:sub(1, 117) .. "..."
+            end
+            tsend("[sql.Query] " .. preview, CLR.SQL)
+        end
+
+        local h
+        if zone_begin and zone_end then
+            h = zone_begin("sql.Query")
+        end
+        local result = orig_query(query)
+        if h then
+            zone_end(h)
+        end
+
+        return result
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Entity Lifecycle Logging (OFF by default)
+-- ══════════════════════════════════════════════════════════
+
+hook.Add("OnEntityCreated", HOOK_PREFIX .. "EntCreated", function(ent)
+    if not cv_entities:GetBool() then
+        return
+    end
+    if not IsValid(ent) then
+        return
+    end
+    tsend(
+        "[EntCreated] " .. tostring(ent) .. " class=" .. (ent:GetClass() or "?"),
+        CLR.ENTLIFE
+    )
+end)
+
+hook.Add("EntityRemoved", HOOK_PREFIX .. "EntRemoved", function(ent)
+    if not cv_entities:GetBool() then
+        return
+    end
+    if not IsValid(ent) then
+        return
+    end
+    tsend(
+        "[EntRemoved] " .. tostring(ent) .. " class=" .. (ent:GetClass() or "?"),
+        CLR.ENTLIFE
+    )
+end)
+
+-- ══════════════════════════════════════════════════════════
+--  ConVar Change Logging (OFF by default)
+-- ══════════════════════════════════════════════════════════
+
+cvars.AddChangeCallback("", function(name, old, new)
+    if not cv_convars:GetBool() then
+        return
+    end
+    tsend(
+        "[ConVar] "
+            .. tostring(name)
+            .. ": "
+            .. tostring(old)
+            .. " -> "
+            .. tostring(new),
+        CLR.CONVAR
+    )
+end, HOOK_PREFIX .. "ConVarLog")
+
+-- ══════════════════════════════════════════════════════════
+--  Player Event Messages (server)
+-- ══════════════════════════════════════════════════════════
+
+if is_server then
+    hook.Add("PlayerConnect", HOOK_PREFIX .. "PlayerConnect", function(name, _)
+        if cv_players:GetBool() then
+            tsend("[PlayerConnect] " .. tostring(name), CLR.HOOK)
+        end
+    end)
+
+    hook.Add(
+        "PlayerInitialSpawn",
+        HOOK_PREFIX .. "PlayerInitSpawn",
+        function(ply)
+            if cv_players:GetBool() and IsValid(ply) then
+                tsend(
+                    "[PlayerInitialSpawn] "
+                        .. ply:Nick()
+                        .. " ["
+                        .. ply:SteamID()
+                        .. "]",
+                    CLR.HOOK
+                )
+            end
+        end
+    )
+
+    hook.Add("PlayerDisconnected", HOOK_PREFIX .. "PlayerDC", function(ply)
+        if cv_players:GetBool() and IsValid(ply) then
+            tsend("[PlayerDisconnected] " .. ply:Nick(), CLR.HOOK)
+        end
+    end)
+
+    hook.Add("PlayerSpawn", HOOK_PREFIX .. "PlayerSpawn", function(ply)
+        if cv_players:GetBool() and IsValid(ply) then
+            tsend("[PlayerSpawn] " .. ply:Nick(), CLR.HOOK)
+        end
+    end)
+
+    hook.Add(
+        "PlayerDeath",
+        HOOK_PREFIX .. "PlayerDeath",
+        function(victim, _, attacker)
+            if cv_players:GetBool() then
+                local v = IsValid(victim) and victim:Nick() or "?"
+                local a = IsValid(attacker)
+                        and attacker.Nick
+                        and attacker:Nick()
+                    or tostring(attacker)
+                tsend("[PlayerDeath] " .. v .. " killed by " .. a, CLR.HOOK)
+            end
+        end
+    )
+
+    hook.Add("PlayerSay", HOOK_PREFIX .. "PlayerSay", function(ply, text)
+        if cv_players:GetBool() and IsValid(ply) then
+            tsend("[PlayerSay] " .. ply:Nick() .. ": " .. text, CLR.HOOK)
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Client-Specific Events
+-- ══════════════════════════════════════════════════════════
+
+if is_client then
+    hook.Add("ChatText", HOOK_PREFIX .. "ChatText", function(_, name, text, typ)
+        tsend(
+            "[Chat:"
+                .. tostring(typ)
+                .. "] "
+                .. tostring(name)
+                .. ": "
+                .. tostring(text),
+            CLR.HOOK
+        )
+    end)
+
+    hook.Add(
+        "OnScreenSizeChanged",
+        HOOK_PREFIX .. "ScreenSize",
+        function(oldW, oldH)
+            tsend(
+                "[ScreenSizeChanged] "
+                    .. oldW
+                    .. "x"
+                    .. oldH
+                    .. " -> "
+                    .. ScrW()
+                    .. "x"
+                    .. ScrH(),
+                CLR.HOOK
+            )
+        end
+    )
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Gamemode Method Wrapping
+-- ══════════════════════════════════════════════════════════
+
+local GM_METHODS_CL = {
+    "HUDPaint",
+    "Think",
+    "CalcView",
+    "PreDrawHUD",
+    "PostDrawHUD",
+    "HUDDrawScoreBoard",
+    "PreRender",
+    "PostRender",
+    "RenderScene",
+}
+
+local GM_METHODS_SV = {
+    "Think",
+    "Tick",
+    "PlayerSpawn",
+    "DoPlayerDeath",
+    "PlayerLoadout",
+    "Move",
+    "SetupMove",
+    "FinishMove",
+    "EntityTakeDamage",
+    "PlayerTraceAttack",
+}
+
+local gm_methods = is_client and GM_METHODS_CL or GM_METHODS_SV
+
+timer.Simple(0, function()
+    local gm = gmod and gmod.GetGamemode and gmod.GetGamemode()
+    if not gm then
+        return
+    end
+
+    local wrapped = 0
+    for _, method in ipairs(gm_methods) do
+        if type(gm[method]) == "function" then
+            gm[method] = tracy_zone_wrap("GM:" .. method, gm[method])
+            wrapped = wrapped + 1
+        end
+    end
+    print("[Tracy] wrapped " .. wrapped .. " gamemode methods")
+end)
+
+-- ══════════════════════════════════════════════════════════
+--  Telemetry Plots
+-- ══════════════════════════════════════════════════════════
+
+if tplot then
+    local TELEMETRY_INTERVAL = 0.5 -- raised from 0.25 to reduce load
+
+    -- cache ents.GetCount or fall back to #ents.GetAll
+    local get_ent_count
+    if ents then
+        if ents.GetCount then
+            get_ent_count = ents.GetCount
+        elseif ents.GetAll then
+            get_ent_count = function()
+                return #ents.GetAll()
+            end
+        end
+    end
+
+    timer.Create(HOOK_PREFIX .. "Telemetry", TELEMETRY_INTERVAL, 0, function()
+        -- only send plots when profiler is actually listening
+        if not is_connected or not is_connected() then
+            return
+        end
+
+        tplot("Lua Memory (KB)", collectgarbage("count"))
+
+        if get_ent_count then
+            tplot("Entity Count", get_ent_count())
+        end
+
+        if player and player.GetCount then
+            tplot("Player Count", player.GetCount())
+        end
+
+        if hook and hook.GetTable then
+            local total_hooks = 0
+            for _, tbl in pairs(hook.GetTable()) do
+                for _ in pairs(tbl) do
+                    total_hooks = total_hooks + 1
+                end
+            end
+            tplot("Hook Count", total_hooks)
+        end
+
+        if is_client then
+            local ft = FrameTime and FrameTime() or 0
+            if ft > 0 then
+                tplot("FPS", 1.0 / ft)
+                tplot("Frame Time (ms)", ft * 1000.0)
+            end
+
+            local rft = RealFrameTime and RealFrameTime() or 0
+            if rft > 0 then
+                tplot("Real Frame Time (ms)", rft * 1000.0)
+            end
+
+            local lp = LocalPlayer and LocalPlayer()
+            if IsValid and IsValid(lp) then
+                if lp.Ping then
+                    tplot("Ping (ms)", lp:Ping())
+                end
+                if lp.GetVelocity then
+                    tplot("Player Speed", lp:GetVelocity():Length())
+                end
+            end
+        end
+
+        if is_server then
+            if engine and engine.TickInterval then
+                local tick_s = engine.TickInterval()
+                tplot("Tick Interval (ms)", tick_s * 1000.0)
+                tplot("Target Tickrate", 1.0 / tick_s)
+            end
+
+            if player and player.GetAll then
+                local plys = player.GetAll()
+                if #plys > 0 then
+                    local total_ping = 0
+                    for _, ply in ipairs(plys) do
+                        if IsValid(ply) and ply.Ping then
+                            total_ping = total_ping + ply:Ping()
+                        end
+                    end
+                    tplot("Avg Player Ping (ms)", total_ping / #plys)
+                end
+            end
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════════════════════
+--  Public API Helpers
+-- ══════════════════════════════════════════════════════════
+
+function _G.tracy_log(text)
+    tsend(tostring(text), CLR.PRINT)
+end
+
+function _G.tracy_log_color(text, r, g, b)
+    if tmsg_color then
+        tsend(tostring(text), { r or 255, g or 255, b or 255 })
+    else
+        tsend(tostring(text), CLR.PRINT)
+    end
+end
 
 function _G.tracy_frame_scope(name, fn)
     if type(fn) ~= "function" then
         return fn
     end
-
     if not frame_mark_start or not frame_mark_end then
         return fn
     end
 
     return function(...)
-        frame_mark_start()
-        if frame_mark_named then
-            frame_mark_named(name)
+        frame_mark_start(name)
+        local success, r1, r2, r3, r4, r5, r6 = pcall(fn, ...)
+        frame_mark_end(name)
+        if not success then
+            error(r1, 2)
         end
-        local r1, r2, r3, r4, r5, r6 = fn(...)
-        frame_mark_end()
         return r1, r2, r3, r4, r5, r6
     end
 end
 
---------------------------------------
--- helper: value / plot shortcuts   --
---------------------------------------
+function _G.tracy_zone_set_value(handle, val)
+    if zone_value and handle then
+        zone_value(handle, val)
+    end
+end
+
+function _G.tracy_zone_set_name(handle, name)
+    if zone_name and handle then
+        zone_name(handle, name)
+    end
+end
+
+function _G.tracy_zone_set_text(handle, text)
+    if zone_text and handle then
+        zone_text(handle, text)
+    end
+end
+
+function _G.tracy_zone_set_color(handle, r, g, b)
+    if zone_color and handle then
+        zone_color(handle, r, g, b)
+    end
+end
+
 function _G.tracy_plot(name, value)
-    if tracy_plot then
-        tracy_plot(name, value)
+    if tplot and is_connected and is_connected() then
+        tplot(name, value)
     end
 end
 
-function _G.tracy_zone_value(value)
-    if zone_value then
-        zone_value(value)
-    end
-end
+-- ══════════════════════════════════════════════════════════
 
-function _G.tracy_zone_name(name)
-    if zone_name then
-        zone_name(name)
-    end
-end
-
-function _G.tracy_zone_text(text)
-    if zone_text then
-        zone_text(text)
-    end
-end
-
-function _G.tracy_zone_color(r, g, b)
-    if zone_color then
-        zone_color(r, g, b)
-    end
-end
+print("[Tracy] loader complete (" .. realm_tag .. ")")
+print("[Tracy] noisy features off by default — enable with:")
+print(
+    "[Tracy]   tracy_log_entities 1 / tracy_log_convars 1 / tracy_log_files 1 / tracy_log_timers 1"
+)
