@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.30)
 
-# TODO: add conviniet launch command:
-# GLIBC_TUNABLES=glibc.rtld.optional_static_tls=1024 steam -applaunch 4000 -console +map gm_flatgrass -noworkshop -noreplay
-
+# TODO: fix it prettier somewhere, can be useful
 # steamapps/common/GarrysMod
 # ❯ gdb ./bin/linux64/srcds
 # (gdb) set environment LD_LIBRARY_PATH ./bin/linux64
