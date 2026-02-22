@@ -39,6 +39,7 @@ set_target_properties(
 
 set_gmod_suffix_prefix(gmod_tracy)
 
+# TODO: avoid hardcoded path
 set(GMOD_LUA_DIR
     "/run/media/eugene/lib/SteamLibrary/steamapps/common/GarrysMod/garrysmod/lua"
     CACHE PATH "Path to garrysmod/lua inside your GMod installation")
@@ -83,6 +84,7 @@ add_custom_target(
 
 add_dependencies(symlink_gmod gmod_tracy)
 
+# TODO: use adequate launch command
 add_custom_target(
     launch_gmod
     COMMAND
