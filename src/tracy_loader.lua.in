@@ -1,29 +1,25 @@
-if tracy and type(tracy) == "table" then
-    print("[Tracy] Already loaded, skipping duplicate require")
+-- tracy_loader.lua
+-- minimal loader + zones + net wrapping + log->tracy helper (без gm_logging)
+
+------------------------
+-- load tracy module  --
+------------------------
+if tracy ~= nil and type(tracy) == "table" then
+    print("[Tracy] already loaded, skipping duplicate require")
     return
 end
 
 local ok, result = pcall(require, "@GMOD_MODULE_NAME@")
-
 if not ok then
-    print("[Tracy] Failed to load binary module: " .. tostring(result))
+    print("[Tracy] failed to load binary module: " .. tostring(result))
     return
 end
 
--- GMod binary require may return the table, or just true, or nil.
--- The C module also tries to set _G.tracy directly.
--- Handle ALL cases:
-
+-- gmod can return table / true / nil; module may set _G.tracy directly
 if type(result) == "table" then
-    -- Module returned the table directly (return 1 from gmod13_open)
     tracy = result
-    print("[Tracy] Loaded via require return value")
-elseif type(tracy) == "table" then
-    -- Module set _G.tracy via SPECIAL_GLOB
-    print("[Tracy] Loaded via _G.tracy global")
-else
-    -- Neither worked — dump debug info
-    print("[Tracy] ERROR: Module loaded but tracy table not found!")
+elseif type(tracy) ~= "table" then
+    print("[Tracy] error: module loaded but tracy table not found")
     print(
         "[Tracy]   require returned: "
             .. type(result)
@@ -34,17 +30,17 @@ else
     return
 end
 
--- Verify the table has functions
-if not tracy.FrameMark then
-    print("[Tracy] ERROR: tracy table exists but FrameMark is missing!")
+if type(tracy.FrameMark) ~= "function" then
+    print("[Tracy] error: tracy table exists but FrameMark is missing")
     return
 end
 
-print("[Tracy] Module ready! Functions available: " .. table.concat(
+print("[Tracy] module ready, functions: " .. table.concat(
     (function()
-        local keys = {}
+        local keys, i = {}, 1
         for k in pairs(tracy) do
-            keys[#keys + 1] = k
+            keys[i] = k
+            i = i + 1
         end
         table.sort(keys)
         return keys
@@ -52,7 +48,162 @@ print("[Tracy] Module ready! Functions available: " .. table.concat(
     ", "
 ))
 
--- Frame mark every tick
+-------------------------------------
+-- cached locals for hot functions --
+-------------------------------------
+local frame_mark = tracy.FrameMark
+local frame_mark_start = tracy.FrameMarkStart -- present
+local frame_mark_end = tracy.FrameMarkEnd -- present
+local frame_mark_named = tracy.FrameMarkNamed -- present
+
+local zone_begin_n = tracy.ZoneBeginN -- present
+local zone_end = tracy.ZoneEnd -- present
+local zone_name = tracy.ZoneName -- present
+local zone_text = tracy.ZoneText -- present
+local zone_value = tracy.ZoneValue -- present
+local zone_color = tracy.ZoneColor -- present
+
+local tracy_message = tracy.Message -- present
+local tracy_msg_color = tracy.MessageColor -- present
+local tracy_plot = tracy.PlotValue -- present
+
+------------------------
+-- per-frame mark     --
+------------------------
 hook.Add("Think", "TracyFrameMark", function()
-    tracy.FrameMark()
+    frame_mark()
 end)
+
+---------------------------------
+-- generic zone wrapper helper --
+---------------------------------
+local function tracy_zone(name, fn)
+    if type(fn) ~= "function" then
+        return fn
+    end
+
+    if not zone_begin_n or not zone_end then
+        return fn
+    end
+
+    return function(...)
+        zone_begin_n(name)
+        local r1, r2, r3, r4, r5, r6 = fn(...)
+        zone_end()
+        return r1, r2, r3, r4, r5, r6
+    end
+end
+
+_G.tracy_zone = tracy_zone
+
+----------------------------------------
+-- example: wrap a specific HUDPaint  --
+----------------------------------------
+do
+    local hooks = hook.GetTable()
+    local hud_tbl = hooks and hooks.HUDPaint
+    local key = "MyHUDPaint"
+
+    if hud_tbl and type(hud_tbl[key]) == "function" then
+        hud_tbl[key] = tracy_zone("HUDPaint:" .. key, hud_tbl[key])
+        hook.Add("HUDPaint", key, hud_tbl[key])
+        print("[Tracy] wrapped HUDPaint:" .. key)
+    end
+end
+
+----------------------------------------
+-- net.Receive wrapper with zones     --
+----------------------------------------
+if net ~= nil then
+    local old_net_receive = net.Receive
+
+    function net.Receive(name, fn)
+        if type(fn) == "function" then
+            fn = tracy_zone("net:" .. tostring(name), fn)
+        end
+        return old_net_receive(name, fn)
+    end
+
+    print("[Tracy] net.Receive hooked for zone profiling")
+end
+
+--------------------------------------
+-- simple print -> tracy bridge     --
+--------------------------------------
+-- if хочешь видеть свои print'ы в Tracy, просто вызывай tracy_log()
+-- вручную в коде; оборачивать глобальный print в gmod я бы не стал.
+
+local function tracy_log(msg)
+    if tracy_message then
+        tracy_message(tostring(msg))
+    end
+end
+
+local function tracy_log_color(msg, r, g, b)
+    if tracy_msg_color then
+        tracy_msg_color(tostring(msg), r or 255, g or 255, b or 255)
+    elseif tracy_message then
+        tracy_message(tostring(msg))
+    end
+end
+
+_G.tracy_log = tracy_log
+_G.tracy_log_color = tracy_log_color
+
+--------------------------------------
+-- helper: frame scopes by name     --
+--------------------------------------
+-- удобный хелпер: оборачиваешь целый тик/фрейм в именованный scope
+
+function _G.tracy_frame_scope(name, fn)
+    if type(fn) ~= "function" then
+        return fn
+    end
+
+    if not frame_mark_start or not frame_mark_end then
+        return fn
+    end
+
+    return function(...)
+        frame_mark_start()
+        if frame_mark_named then
+            frame_mark_named(name)
+        end
+        local r1, r2, r3, r4, r5, r6 = fn(...)
+        frame_mark_end()
+        return r1, r2, r3, r4, r5, r6
+    end
+end
+
+--------------------------------------
+-- helper: value / plot shortcuts   --
+--------------------------------------
+function _G.tracy_plot(name, value)
+    if tracy_plot then
+        tracy_plot(name, value)
+    end
+end
+
+function _G.tracy_zone_value(value)
+    if zone_value then
+        zone_value(value)
+    end
+end
+
+function _G.tracy_zone_name(name)
+    if zone_name then
+        zone_name(name)
+    end
+end
+
+function _G.tracy_zone_text(text)
+    if zone_text then
+        zone_text(text)
+    end
+end
+
+function _G.tracy_zone_color(r, g, b)
+    if zone_color then
+        zone_color(r, g, b)
+    end
+end

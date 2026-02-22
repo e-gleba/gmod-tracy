@@ -22,7 +22,7 @@ add_library(gmod_tracy SHARED "gmod_tracy.cpp")
 
 target_link_libraries(
     gmod_tracy
-    PRIVATE #warnings
+    PRIVATE warnings
             gmod-module-base
             Tracy::TracyClient
             spdlog

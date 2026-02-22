@@ -1,40 +1,55 @@
-
 #include "GarrysMod/Lua/Interface.h"
 #include "tracy/Tracy.hpp"
 #include "tracy/TracyC.h"
 
+#include <gsl/gsl>
+
 #include <cstring>
+#include <string_view>
 #include <unordered_map>
 
 using namespace GarrysMod::Lua;
 
 // ═══════════════════════════════════════════════════════
-//  Zone Handle Storage
+//  Types & State
 // ═══════════════════════════════════════════════════════
+
+using ZoneHandle = uint32_t;
 
 struct ZoneEntry
 {
     TracyCZoneCtx ctx{};
-    bool          ended = false;
+    bool          ended{ false };
 };
 
-static std::unordered_map<uint32_t, ZoneEntry> g_zones;
-static uint32_t                                g_next_handle = 1;
+static std::unordered_map<ZoneHandle, ZoneEntry> g_zones;
+static ZoneHandle                                g_next_handle{ 1 };
 
 // ═══════════════════════════════════════════════════════
-//  Helper
+//  Helpers
 // ═══════════════════════════════════════════════════════
 
-static void register_field(ILuaBase* lua_base, const char* name, CFunc func)
+[[nodiscard]] constexpr auto pack_rgb(uint32_t r,
+                                      uint32_t g,
+                                      uint32_t b) noexcept -> uint32_t
+{
+    return (r << 16U) | (g << 8U) | b;
+}
+
+static void register_field(gsl::not_null<ILuaBase*> lua_base,
+                           gsl::czstring            name,
+                           CFunc                    func)
 {
     lua_base->PushCFunction(func);
     lua_base->SetField(-2, name);
 }
 
-static ZoneEntry* find_active_zone(ILuaBase* lua_base, int pos)
+[[nodiscard]] static auto find_active_zone(gsl::not_null<ILuaBase*> lua_base,
+                                           int pos) -> ZoneEntry*
 {
-    auto handle = static_cast<uint32_t>(lua_base->CheckNumber(pos));
-    auto iter   = g_zones.find(handle);
+    const auto handle =
+        gsl::narrow_cast<ZoneHandle>(lua_base->CheckNumber(pos));
+    auto iter = g_zones.find(handle);
     if (iter == g_zones.end() || iter->second.ended) {
         lua_base->ThrowError("Invalid or ended Tracy zone handle");
         return nullptr;
@@ -48,22 +63,21 @@ static ZoneEntry* find_active_zone(ILuaBase* lua_base, int pos)
 
 LUA_FUNCTION(tracy_zone_begin_n)
 {
-    const char* name     = LUA->CheckString(1);
-    size_t      name_len = std::strlen(name);
+    const std::string_view name{ LUA->CheckString(1) };
 
-    auto srcloc = ___tracy_alloc_srcloc_name(static_cast<uint32_t>(__LINE__),
-                                             __FILE__,
-                                             std::strlen(__FILE__),
-                                             __FUNCTION__,
-                                             std::strlen(__FUNCTION__),
-                                             name,
-                                             name_len,
-                                             0);
+    const auto srcloc =
+        ___tracy_alloc_srcloc_name(gsl::narrow_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   std::strlen(__FILE__),
+                                   __FUNCTION__,
+                                   std::strlen(__FUNCTION__),
+                                   name.data(),
+                                   name.size(),
+                                   0);
 
-    TracyCZoneCtx ctx = ___tracy_emit_zone_begin_alloc(srcloc, 1);
-
-    uint32_t handle = g_next_handle++;
-    g_zones[handle] = ZoneEntry{ ctx, false };
+    const auto ctx    = ___tracy_emit_zone_begin_alloc(srcloc, 1);
+    const auto handle = g_next_handle++;
+    g_zones[handle]   = ZoneEntry{ .ctx = ctx, .ended = false };
 
     LUA->PushNumber(static_cast<double>(handle));
     return 1;
@@ -71,8 +85,8 @@ LUA_FUNCTION(tracy_zone_begin_n)
 
 LUA_FUNCTION(tracy_zone_end)
 {
-    auto handle = static_cast<uint32_t>(LUA->CheckNumber(1));
-    auto iter   = g_zones.find(handle);
+    const auto handle = gsl::narrow_cast<ZoneHandle>(LUA->CheckNumber(1));
+    auto       iter   = g_zones.find(handle);
     if (iter == g_zones.end()) {
         LUA->ThrowError("Invalid Tracy zone handle");
         return 0;
@@ -87,46 +101,46 @@ LUA_FUNCTION(tracy_zone_end)
 
 LUA_FUNCTION(tracy_zone_text)
 {
-    ZoneEntry* zone = find_active_zone(LUA, 1);
-    if (!zone) {
+    auto* zone = find_active_zone(LUA, 1);
+    if (zone == nullptr) {
         return 0;
     }
-    const char* text = LUA->CheckString(2);
-    ___tracy_emit_zone_text(zone->ctx, text, std::strlen(text));
+    const std::string_view text{ LUA->CheckString(2) };
+    ___tracy_emit_zone_text(zone->ctx, text.data(), text.size());
     return 0;
 }
 
 LUA_FUNCTION(tracy_zone_name)
 {
-    ZoneEntry* zone = find_active_zone(LUA, 1);
-    if (!zone) {
+    auto* zone = find_active_zone(LUA, 1);
+    if (zone == nullptr) {
         return 0;
     }
-    const char* name = LUA->CheckString(2);
-    ___tracy_emit_zone_name(zone->ctx, name, std::strlen(name));
+    const std::string_view name{ LUA->CheckString(2) };
+    ___tracy_emit_zone_name(zone->ctx, name.data(), name.size());
     return 0;
 }
 
 LUA_FUNCTION(tracy_zone_color)
 {
-    ZoneEntry* zone = find_active_zone(LUA, 1);
-    if (!zone) {
+    auto* zone = find_active_zone(LUA, 1);
+    if (zone == nullptr) {
         return 0;
     }
-    auto r = static_cast<uint32_t>(LUA->CheckNumber(2));
-    auto g = static_cast<uint32_t>(LUA->CheckNumber(3));
-    auto b = static_cast<uint32_t>(LUA->CheckNumber(4));
-    ___tracy_emit_zone_color(zone->ctx, (r << 16) | (g << 8) | b);
+    const auto r = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(2));
+    const auto g = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(3));
+    const auto b = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(4));
+    ___tracy_emit_zone_color(zone->ctx, pack_rgb(r, g, b));
     return 0;
 }
 
 LUA_FUNCTION(tracy_zone_value)
 {
-    ZoneEntry* zone = find_active_zone(LUA, 1);
-    if (!zone) {
+    auto* zone = find_active_zone(LUA, 1);
+    if (zone == nullptr) {
         return 0;
     }
-    auto val = static_cast<uint64_t>(LUA->CheckNumber(2));
+    const auto val = gsl::narrow_cast<uint64_t>(LUA->CheckNumber(2));
     ___tracy_emit_zone_value(zone->ctx, val);
     return 0;
 }
@@ -137,6 +151,7 @@ LUA_FUNCTION(tracy_zone_value)
 
 LUA_FUNCTION(tracy_frame_mark)
 {
+    (void)LUA; // macro-injected param — unused here
     FrameMark;
     return 0;
 }
@@ -165,18 +180,18 @@ LUA_FUNCTION(tracy_frame_mark_end)
 
 LUA_FUNCTION(tracy_message)
 {
-    const char* msg = LUA->CheckString(1);
-    TracyMessage(msg, std::strlen(msg));
+    const std::string_view msg{ LUA->CheckString(1) };
+    TracyMessage(msg.data(), msg.size());
     return 0;
 }
 
 LUA_FUNCTION(tracy_message_color)
 {
-    const char* msg = LUA->CheckString(1);
-    auto        r   = static_cast<uint32_t>(LUA->CheckNumber(2));
-    auto        g   = static_cast<uint32_t>(LUA->CheckNumber(3));
-    auto        b   = static_cast<uint32_t>(LUA->CheckNumber(4));
-    TracyMessageC(msg, std::strlen(msg), (r << 16) | (g << 8) | b);
+    const std::string_view msg{ LUA->CheckString(1) };
+    const auto             r = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(2));
+    const auto             g = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(3));
+    const auto             b = gsl::narrow_cast<uint32_t>(LUA->CheckNumber(4));
+    TracyMessageC(msg.data(), msg.size(), pack_rgb(r, g, b));
     return 0;
 }
 
@@ -186,22 +201,22 @@ LUA_FUNCTION(tracy_message_color)
 
 LUA_FUNCTION(tracy_plot_value)
 {
-    const char* name = LUA->CheckString(1);
-    double      val  = LUA->CheckNumber(2);
+    const gsl::czstring name = LUA->CheckString(1);
+    const auto          val  = LUA->CheckNumber(2);
     TracyPlot(name, val);
     return 0;
 }
 
 LUA_FUNCTION(tracy_app_info)
 {
-    const char* info = LUA->CheckString(1);
-    TracyAppInfo(info, std::strlen(info));
+    const std::string_view info{ LUA->CheckString(1) };
+    TracyAppInfo(info.data(), info.size());
     return 0;
 }
 
 LUA_FUNCTION(tracy_is_connected)
 {
-    LUA->PushBool(static_cast<bool>(TracyIsConnected));
+    LUA->PushBool(TracyIsConnected != 0);
     return 1;
 }
 
@@ -211,8 +226,7 @@ LUA_FUNCTION(tracy_is_connected)
 
 GMOD_MODULE_OPEN()
 {
-    // ── Build the module table ───────────────────────
-    LUA->CreateTable(); // stack: [T]
+    LUA->CreateTable();
 
     register_field(LUA, "ZoneBeginN", tracy_zone_begin_n);
     register_field(LUA, "ZoneEnd", tracy_zone_end);
@@ -230,26 +244,24 @@ GMOD_MODULE_OPEN()
     register_field(LUA, "AppInfo", tracy_app_info);
     register_field(LUA, "IsConnected", tracy_is_connected);
 
-    // stack: [T]
-
-    // ── Also set _G.tracy as a fallback ──────────────
-    LUA->Push(-1);                  // stack: [T, T]
-    LUA->PushSpecial(SPECIAL_GLOB); // stack: [T, T, _G]
-    LUA->Push(-2);                  // stack: [T, T, _G, T]
-    LUA->SetField(-2, "tracy");     // stack: [T, T, _G]   (_G.tracy = T)
-    LUA->Pop(2); // stack: [T]          (pop _G and duplicate)
+    // Also set _G.tracy as a fallback
+    LUA->Push(-1);
+    LUA->PushSpecial(SPECIAL_GLOB);
+    LUA->Push(-2);
+    LUA->SetField(-2, "tracy");
+    LUA->Pop(2);
 
     TracyMessageL("gmsv_tracy module loaded");
-
-    // ── Return the table so require("tracy") yields it ──
     return 1;
 }
 
 GMOD_MODULE_CLOSE()
 {
-    for (auto& pair : g_zones) {
-        if (!pair.second.ended) {
-            ___tracy_emit_zone_end(pair.second.ctx);
+    (void)LUA; // macro-injected param — unused here
+
+    for (auto& [_, zone] : g_zones) { // C++26 placeholder name
+        if (!zone.ended) {
+            ___tracy_emit_zone_end(zone.ctx);
         }
     }
     g_zones.clear();
