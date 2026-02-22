@@ -57,7 +57,11 @@ configure_file("${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua.in"
 
 set(loader_lua "${CMAKE_CURRENT_BINARY_DIR}/tracy_loader.lua")
 
-# TODO: gmsv or gmcl?
+# TODO: gmsv or gmcl? those are unused now
+set(gmod_tracy_realm "gmcl" CACHE STRING
+                                  "gmod module realm prefix (gmsv or gmcl)")
+set_property(CACHE gmod_tracy_realm PROPERTY STRINGS "gmsv" "gmcl")
+
 add_custom_target(
     symlink_gmod
     COMMAND ${CMAKE_COMMAND} -E make_directory "${GMOD_LUA_DIR}/bin"
@@ -74,6 +78,7 @@ add_custom_target(
         ${CMAKE_COMMAND} -E create_symlink "${loader_lua}"
         "${GMOD_LUA_DIR}/autorun/server/tracy_loader.lua"
     COMMENT "symlink_gmod => ${GMOD_LUA_DIR} (module=@${GMOD_MODULE_NAME}@)"
+    DEPENDS ${loader_lua}
     VERBATIM)
 
 add_dependencies(symlink_gmod gmod_tracy)
