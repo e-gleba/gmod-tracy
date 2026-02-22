@@ -3,8 +3,8 @@ cmake_minimum_required(VERSION 3.28)
 project(
     cxx_project
     VERSION 1.0.0
-    DESCRIPTION "My awesome C/C++ project!"
-    HOMEPAGE_URL "https://github.com/e-gleba/template-cpp-project"
+    DESCRIPTION "Garry's Mod Tracy profiler module"
+    HOMEPAGE_URL "https://github.com/e-gleba/gmod-tracy"
     LANGUAGES C CXX)
 
 list(
