@@ -16,8 +16,8 @@ cpmaddpackage(
     "CMAKE_POSITION_INDEPENDENT_CODE ON"
     # core functionality
     "TRACY_ENABLE ON" # master switch
-    "TRACY_ON_DEMAND ON" # start profiling only when connected to server
-    "TRACY_DELAYED_INIT ON" # defer init until first tracy call
+    "TRACY_ON_DEMAND OFF" # start profiling only when connected to server
+    "TRACY_DELAYED_INIT OFF" # defer init until first tracy call
     "TRACY_MANUAL_LIFETIME OFF" # manual profile start/stop (requires DELAYED_INIT=ON)
     # callstack options
     "TRACY_CALLSTACK OFF" # force callstack capture for all zones (perf hit)
