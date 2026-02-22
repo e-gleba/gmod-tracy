@@ -1107,6 +1107,138 @@ if tplot then
 end
 
 -- ══════════════════════════════════════════════════════════
+--  Live Callstack / Script Tracing
+-- ══════════════════════════════════════════════════════════
+
+local cv_autotrace = CreateConVar(
+    "tracy_autotrace",
+    "0",
+    FCVAR_ARCHIVE,
+    "Auto-profile ALL Lua function calls (expensive! use briefly)"
+)
+local cv_autotrace_depth = CreateConVar(
+    "tracy_autotrace_depth",
+    "64",
+    FCVAR_ARCHIVE,
+    "Max nested zone depth for autotrace"
+)
+
+-- ── Manual: drop tracy_trace() anywhere in code ──────────
+
+function _G.tracy_trace(label)
+    if not is_connected or not is_connected() then
+        return
+    end
+    local tb = debug.traceback(
+        (label or "[tracy_trace]") .. " @ " .. os.date("%H:%M:%S"),
+        2
+    )
+    tsend(tb, CLR.HOOK)
+end
+
+-- ── Enrich existing zones with source location ──────────
+
+local orig_zone_wrap = _G.tracy_zone
+function _G.tracy_zone(label, fn)
+    if type(fn) ~= "function" then
+        return fn
+    end
+    if not zone_begin or not zone_end then
+        return fn
+    end
+
+    -- grab definition site once at wrap time
+    local info = debug.getinfo(fn, "S")
+    local src = info and (info.short_src .. ":" .. (info.linedefined or 0))
+        or "?"
+
+    return function(...)
+        local h = zone_begin(label)
+        -- attach source file + runtime callstack as zone text
+        if zone_text then
+            zone_text(h, src .. "\n" .. debug.traceback("", 2))
+        end
+        local ok, r1, r2, r3, r4, r5, r6 = pcall(fn, ...)
+        zone_end(h)
+        if not ok then
+            error(r1, 2)
+        end
+        return r1, r2, r3, r4, r5, r6
+    end
+end
+_G.tracy_zone_safe = _G.tracy_zone -- keep alias
+
+-- ── Automatic function-level tracing via debug.sethook ──
+
+local trace_stack = {}
+local trace_depth = 0
+local trace_active = false
+
+local function trace_hook(event)
+    if event == "call" or event == "tail call" then
+        local max = cv_autotrace_depth:GetInt()
+        if trace_depth >= max then
+            return
+        end
+
+        local info = debug.getinfo(2, "nSl")
+        if not info then
+            return
+        end
+
+        local src = info.short_src or "?"
+        -- skip C code and our own tracy internals
+        if src == "[C]" then
+            return
+        end
+        if src:find("tracy_loader") then
+            return
+        end
+
+        local name = (info.name or "<anon>")
+            .. " | "
+            .. src
+            .. ":"
+            .. (info.currentline or info.linedefined or 0)
+
+        local h = zone_begin(name)
+        trace_depth = trace_depth + 1
+        trace_stack[trace_depth] = h
+    elseif event == "return" or event == "tail return" then
+        if trace_depth > 0 then
+            zone_end(trace_stack[trace_depth])
+            trace_stack[trace_depth] = nil
+            trace_depth = trace_depth - 1
+        end
+    end
+end
+
+-- Toggle the hook on/off based on convar
+local function update_autotrace()
+    local want = cv_autotrace:GetBool()
+    if want and not trace_active then
+        debug.sethook(trace_hook, "cr")
+        trace_active = true
+        tsend("[Tracy] autotrace ON — expect lower FPS", CLR.WARNING)
+    elseif not want and trace_active then
+        debug.sethook() -- remove hook
+        -- clean up any dangling zones
+        for i = trace_depth, 1, -1 do
+            zone_end(trace_stack[i])
+            trace_stack[i] = nil
+        end
+        trace_depth = 0
+        trace_active = false
+        tsend("[Tracy] autotrace OFF", CLR.WARNING)
+    end
+end
+
+cvars.AddChangeCallback("tracy_autotrace", function()
+    -- defer one frame so the convar value is settled
+    timer.Simple(0, update_autotrace)
+end, HOOK_PREFIX .. "AutoTrace")
+
+-- ══════════════════════════════════════════════════════════
 --  Public API Helpers
 -- ══════════════════════════════════════════════════════════
 
