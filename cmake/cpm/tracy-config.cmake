@@ -13,6 +13,7 @@ cpmaddpackage(
     # build config
     "TRACY_STATIC ON"
     "TRACY_LTO OFF"
+    "CMAKE_POSITION_INDEPENDENT_CODE ON"
     # core functionality
     "TRACY_ENABLE ON" # master switch
     "TRACY_ON_DEMAND OFF" # start profiling only when connected to server
