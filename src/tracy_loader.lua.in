@@ -3,7 +3,7 @@ if tracy and type(tracy) == "table" then
     return
 end
 
-local ok, result = pcall(require, "gmod_tracy")
+local ok, result = pcall(require, "@GMOD_MODULE_NAME@")
 
 if not ok then
     print("[Tracy] Failed to load binary module: " .. tostring(result))

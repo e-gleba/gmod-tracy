@@ -37,10 +37,6 @@ set_target_properties(
                CXX_EXTENSIONS NO
                POSITION_INDEPENDENT_CODE ON)
 
-set(gmod_tracy_realm "gmcl" CACHE STRING
-                                  "GMod module realm prefix (gmsv or gmcl)")
-set_property(CACHE gmod_tracy_realm PROPERTY STRINGS "gmsv" "gmcl")
-
 set_gmod_suffix_prefix(gmod_tracy)
 
 set(GMOD_LUA_DIR
@@ -53,6 +49,15 @@ install(TARGETS gmod_tracy LIBRARY DESTINATION "${GMOD_LUA_DIR}/bin"
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua"
         DESTINATION "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}")
 
+set(GMOD_MODULE_NAME "gmod_tracy"
+    CACHE STRING "binary module name passed to require() in tracy_loader.lua")
+
+configure_file("${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/tracy_loader.lua" @ONLY)
+
+set(loader_lua "${CMAKE_CURRENT_BINARY_DIR}/tracy_loader.lua")
+
+# TODO: gmsv or gmcl?
 add_custom_target(
     symlink_gmod
     COMMAND ${CMAKE_COMMAND} -E make_directory "${GMOD_LUA_DIR}/bin"
@@ -63,18 +68,15 @@ add_custom_target(
         ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:gmod_tracy>"
         "${GMOD_LUA_DIR}/bin/$<TARGET_FILE_NAME:gmod_tracy>"
     COMMAND
-        ${CMAKE_COMMAND} -E make_directory
-        "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}"
-    COMMAND
         ${CMAKE_COMMAND} -E rm -f
-        "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}/tracy_loader.lua"
+        "${GMOD_LUA_DIR}/autorun/server/tracy_loader.lua"
     COMMAND
-        ${CMAKE_COMMAND} -E create_symlink
-        "${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua"
-        "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}/tracy_loader.lua"
-    # TARGET_FILE genex in COMMAND implicitly adds dep on gmod_tracy
-    COMMENT "symlink_gmod => ${GMOD_LUA_DIR}"
+        ${CMAKE_COMMAND} -E create_symlink "${loader_lua}"
+        "${GMOD_LUA_DIR}/autorun/server/tracy_loader.lua"
+    COMMENT "symlink_gmod => ${GMOD_LUA_DIR} (module=@${GMOD_MODULE_NAME}@)"
     VERBATIM)
+
+add_dependencies(symlink_gmod gmod_tracy)
 
 add_custom_target(
     launch_gmod
@@ -84,3 +86,5 @@ add_custom_target(
         4000 -console +map gm_flatgrass -noworkshop -noreplay
     COMMENT "launch_gmod => steam -applaunch 4000"
     VERBATIM)
+
+add_dependencies(launch_gmod symlink_gmod)
