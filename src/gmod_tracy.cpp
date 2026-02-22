@@ -117,6 +117,9 @@ static int tracy_PlotValue(lua_State* state)
 // ═════════════════════════════════════════════
 GMOD_MODULE_OPEN()
 {
+    // Trigger Tracy's lazy init now that GMod is ready
+    TracyMessageL("gmod_tracy module loaded");
+
     LUA->PushSpecial(SPECIAL_GLOB);
 
     LUA->CreateTable();

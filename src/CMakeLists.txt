@@ -42,7 +42,7 @@ endif()
 option(GMOD_TRACY_BUILD_EXAMPLE
        "Build the gmod-module-base example instead of gmod_tracy source" ON)
 
-set(gmod_tracy_realm "gmsv" CACHE STRING
+set(gmod_tracy_realm "gmcl" CACHE STRING
                                   "GMod module realm prefix (gmsv or gmcl)")
 set_property(CACHE gmod_tracy_realm PROPERTY STRINGS "gmsv" "gmcl")
 
@@ -58,7 +58,8 @@ if(GMOD_TRACY_BUILD_EXAMPLE)
                    OUTPUT_NAME "${gmod_tracy_realm}_example_${gmod_platform}"
                    PREFIX ""
                    SUFFIX ".dll"
-                   POSITION_INDEPENDENT_CODE ON)
+                   POSITION_INDEPENDENT_CODE ON
+                   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
     target_include_directories(gmod_example_module SYSTEM
                                PRIVATE "${gmod_module_base_SOURCE_DIR}/include")
@@ -67,7 +68,19 @@ if(GMOD_TRACY_BUILD_EXAMPLE)
 
     target_compile_options(
         gmod_example_module
-        PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:-fvisibility=hidden>)
+        PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
+                -fvisibility=hidden # hide symbols (GMod convention)
+                -msse # EnableSSE
+                -ffast-math # FloatFast
+                -O2 # Optimize
+                -g # Symbols (debug info even in release)
+                >
+                $<$<CXX_COMPILER_ID:MSVC>:
+                /Zi # Symbols (NoEditAndContinue = /Zi not /ZI)
+                /arch:SSE # EnableSSE
+                /fp:fast # FloatFast
+                /O2 # Optimize
+                >)
 endif()
 
 add_library(gmod_tracy SHARED "gmod_tracy.cpp")
@@ -82,13 +95,31 @@ target_link_libraries(
             spdlog
             Microsoft.GSL::GSL)
 
-target_compile_definitions(gmod_tracy PRIVATE TRACY_ENABLE GMMODULE)
+target_compile_definitions(
+    gmod_tracy
+    PRIVATE TRACY_ENABLE
+            TRACY_ON_DEMAND
+            TRACY_DELAYED_INIT
+            GMMODULE)
 
 # Hide all symbols except gmod13_open / gmod13_close on non-Windows platforms.
 # On Windows, symbols are hidden by default (MSVC dllexport model).
 # Uses PLATFORM_ID generator expression instead of legacy if(NOT WIN32) guard.
 target_compile_options(
-    gmod_tracy PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:-fvisibility=hidden>)
+    gmod_tracy
+    PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
+            -fvisibility=hidden # hide symbols (GMod convention)
+            -msse # EnableSSE
+            -ffast-math # FloatFast
+            -O2 # Optimize
+            -g # Symbols (debug info even in release)
+            >
+            $<$<CXX_COMPILER_ID:MSVC>:
+            /Zi # Symbols (NoEditAndContinue = /Zi not /ZI)
+            /arch:SSE # EnableSSE
+            /fp:fast # FloatFast
+            /O2 # Optimize
+            >)
 
 set_target_properties(
     gmod_tracy
@@ -98,4 +129,23 @@ set_target_properties(
                OUTPUT_NAME "${gmod_tracy_realm}_tracy_${gmod_platform}"
                PREFIX ""
                SUFFIX ".dll"
-               POSITION_INDEPENDENT_CODE ON)
+               POSITION_INDEPENDENT_CODE ON
+               MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+set(GMOD_LUA_DIR
+    "/run/media/eugene/lib/SteamLibrary/steamapps/common/GarrysMod/garrysmod/lua"
+    CACHE PATH "Path to garrysmod/lua inside your GMod installation")
+
+if(gmod_tracy_realm STREQUAL "gmsv")
+    set(gmod_autorun_subfolder "server")
+elseif(gmod_tracy_realm STREQUAL "gmcl")
+    set(gmod_autorun_subfolder "client")
+else()
+    message(FATAL_ERROR "Invalid gmod_tracy_realm: ${gmod_tracy_realm}")
+endif()
+
+install(TARGETS gmod_tracy LIBRARY DESTINATION "${GMOD_LUA_DIR}/bin"
+        RUNTIME DESTINATION "${GMOD_LUA_DIR}/bin")
+
+install(FILES "${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua"
+        DESTINATION "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}")
