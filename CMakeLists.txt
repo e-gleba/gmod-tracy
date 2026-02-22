@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.30)
 
 project(
-    cxx_project
+    garrys_mod_tracy_integration
     VERSION 1.0.0
     DESCRIPTION "Garry's Mod Tracy profiler module"
     HOMEPAGE_URL "https://github.com/e-gleba/gmod-tracy"
