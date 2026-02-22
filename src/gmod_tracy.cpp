@@ -1,4 +1,3 @@
-// gmsv_tracy_win64.cpp
 #include "GarrysMod/Lua/Interface.h"
 #include "tracy/Tracy.hpp"
 #include "tracy/TracyLua.hpp"

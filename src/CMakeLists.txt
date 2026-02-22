@@ -55,7 +55,7 @@ if(GMOD_TRACY_BUILD_EXAMPLE)
         PROPERTIES CXX_STANDARD 26
                    CXX_STANDARD_REQUIRED YES
                    CXX_EXTENSIONS NO
-                   OUTPUT_NAME "${gmod_tracy_realm}_tracy_${gmod_platform}"
+                   OUTPUT_NAME "${gmod_tracy_realm}_example_${gmod_platform}"
                    PREFIX ""
                    SUFFIX ".dll"
                    POSITION_INDEPENDENT_CODE ON)
