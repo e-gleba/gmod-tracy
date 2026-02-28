@@ -31,9 +31,18 @@ find_package(doxygen CONFIG REQUIRED)
 
 find_package(cpm CONFIG REQUIRED)
 
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/license")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/readme.md")
+
+install(FILES "${CMAKE_SOURCE_DIR}/license" "${CMAKE_SOURCE_DIR}/readme.md"
+        DESTINATION . COMPONENT documentation)
+
 add_subdirectory(src)
 
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+include(CPack)
+

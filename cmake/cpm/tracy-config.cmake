@@ -9,6 +9,8 @@ cpmaddpackage(
     ON
     GIT_SHALLOW
     ON
+    EXCLUDE_FROM_ALL
+    ON
     OPTIONS
     # build config
     "TRACY_STATIC ON"

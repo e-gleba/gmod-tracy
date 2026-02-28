@@ -116,13 +116,8 @@ endif()
 # cpack: binary distribution for github releases
 include(GNUInstallDirs)
 
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/license")
-set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/readme.md")
-
 # force relative install prefix for cpack
 set(CPACK_SET_DESTDIR OFF)
 
 # strip binaries in release packages
 set(CPACK_STRIP_FILES ON)
-
-include(CPack)
