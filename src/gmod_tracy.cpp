@@ -16,14 +16,14 @@ using namespace GarrysMod::Lua;
 
 using ZoneHandle = uint32_t;
 
-struct ZoneEntry
+struct zone_entry final
 {
     TracyCZoneCtx ctx{};
     bool          ended{ false };
 };
 
-static std::unordered_map<ZoneHandle, ZoneEntry> g_zones;
-static ZoneHandle                                g_next_handle{ 1 };
+static std::unordered_map<ZoneHandle, zone_entry> g_zones;
+static ZoneHandle                                 g_next_handle{ 1 };
 
 // ═══════════════════════════════════════════════════════
 //  Helpers
@@ -45,7 +45,7 @@ static void register_field(gsl::not_null<ILuaBase*> lua_base,
 }
 
 [[nodiscard]] static auto find_active_zone(gsl::not_null<ILuaBase*> lua_base,
-                                           int pos) -> ZoneEntry*
+                                           int pos) -> zone_entry*
 {
     const auto handle =
         gsl::narrow_cast<ZoneHandle>(lua_base->CheckNumber(pos));
@@ -77,7 +77,7 @@ LUA_FUNCTION(tracy_zone_begin_n)
 
     const auto ctx    = ___tracy_emit_zone_begin_alloc(srcloc, 1);
     const auto handle = g_next_handle++;
-    g_zones[handle]   = ZoneEntry{ .ctx = ctx, .ended = false };
+    g_zones[handle]   = zone_entry{ .ctx = ctx, .ended = false };
 
     LUA->PushNumber(static_cast<double>(handle));
     return 1;
