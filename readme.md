@@ -1,8 +1,10 @@
 # gmod-tracy
 
-[![C++ Standard](https://img.shields.io/badge/C%2B%2B-26-00599C?style=for-the-badge&logo=cplusplus&logoColor=white&labelColor=1C1C1C)](https://isocpp.org/)
-[![CMake](https://img.shields.io/badge/CMake-3.30%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white&labelColor=1C1C1C)](https://cmake.org)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-FF6B6B?style=for-the-badge&logo=gnu&logoColor=white&labelColor=1C1C1C)](https://www.gnu.org/licenses/agpl-3.0.html)
+<p align="center">
+  <a href="https://isocpp.org/"><img src="https://img.shields.io/badge/C%2B%2B-23%2F26-00599C?style=for-the-badge&logo=cplusplus&logoColor=white&labelColor=1C1C1C" alt="C++ Standard"/></a>
+  <a href="https://cmake.org"><img src="https://img.shields.io/badge/CMake-3.30%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white&labelColor=1C1C1C" alt="CMake"/></a>
+  <a href="license"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge&labelColor=1C1C1C" alt="License"/></a>
+</p>
 
 A Garry's Mod binary module that exposes [Tracy Profiler](https://github.com/wolfpld/tracy) to GLua. Instrument your server/client Lua code with named zones, frame marks, plots, and messages — captured live in Tracy's GUI over TCP.
 
