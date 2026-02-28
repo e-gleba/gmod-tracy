@@ -57,9 +57,9 @@ if(GMOD_LUA_DIR)
     set(install_bin_dir "${GMOD_LUA_DIR}/bin")
     set(install_autorun_dir "${GMOD_LUA_DIR}/autorun/${gmod_autorun_subfolder}")
 else()
-    set(install_bin_dir "${CMAKE_INSTALL_PREFIX}/lua/bin")
-    set(install_autorun_dir
-        "${CMAKE_INSTALL_PREFIX}/lua/autorun/${gmod_autorun_subfolder}")
+    # package mode: relative to CMAKE_INSTALL_PREFIX
+    set(install_bin_dir "lua/bin")
+    set(install_autorun_dir "lua/autorun/${gmod_autorun_subfolder}")
 endif()
 
 install(TARGETS gmod_tracy LIBRARY DESTINATION "${install_bin_dir}"
@@ -118,6 +118,9 @@ include(GNUInstallDirs)
 
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/license")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/readme.md")
+
+# force relative install prefix for cpack
+set(CPACK_SET_DESTDIR OFF)
 
 # strip binaries in release packages
 set(CPACK_STRIP_FILES ON)

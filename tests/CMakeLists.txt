@@ -18,6 +18,7 @@ target_link_libraries(tests PRIVATE doctest::doctest)
 target_compile_definitions(
     tests
     PRIVATE
+        DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
         # Use full macro names (e.g., DOCTEST_TEST_CASE instead of TEST_CASE)
         DOCTEST_CONFIG_SUPER_FAST_ASSERTS
         DOCTEST_CONFIG_NO_SHORT_MACRO_NAMES
@@ -31,3 +32,4 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux|Windows|Darwin")
     include(doctest)
     doctest_discover_tests(tests)
 endif()
+
