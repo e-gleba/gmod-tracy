@@ -239,8 +239,7 @@
             "displayName": "GCC Package",
             "configurePreset": "gcc",
             "generators": [
-                "TGZ",
-                "RPM"
+                "TGZ"
             ]
         }
     ],
