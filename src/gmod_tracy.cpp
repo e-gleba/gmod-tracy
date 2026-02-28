@@ -14,7 +14,7 @@ using namespace GarrysMod::Lua;
 //  Types & State
 // ═══════════════════════════════════════════════════════
 
-using ZoneHandle = uint32_t;
+using zone_handle_t = uint32_t;
 
 struct zone_entry final
 {
@@ -22,8 +22,8 @@ struct zone_entry final
     bool          ended{ false };
 };
 
-static std::unordered_map<ZoneHandle, zone_entry> g_zones;
-static ZoneHandle                                 g_next_handle{ 1 };
+static std::unordered_map<zone_handle_t, zone_entry> g_zones;
+static zone_handle_t                                 g_next_handle{ 1 };
 
 // ═══════════════════════════════════════════════════════
 //  Helpers
@@ -48,7 +48,7 @@ static void register_field(gsl::not_null<ILuaBase*> lua_base,
                                            int pos) -> zone_entry*
 {
     const auto handle =
-        gsl::narrow_cast<ZoneHandle>(lua_base->CheckNumber(pos));
+        gsl::narrow_cast<zone_handle_t>(lua_base->CheckNumber(pos));
     auto iter = g_zones.find(handle);
     if (iter == g_zones.end() || iter->second.ended) {
         lua_base->ThrowError("Invalid or ended Tracy zone handle");
@@ -85,7 +85,7 @@ LUA_FUNCTION(tracy_zone_begin_n)
 
 LUA_FUNCTION(tracy_zone_end)
 {
-    const auto handle = gsl::narrow_cast<ZoneHandle>(LUA->CheckNumber(1));
+    const auto handle = gsl::narrow_cast<zone_handle_t>(LUA->CheckNumber(1));
     auto       iter   = g_zones.find(handle);
     if (iter == g_zones.end()) {
         LUA->ThrowError("Invalid Tracy zone handle");
