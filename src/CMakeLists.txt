@@ -84,6 +84,8 @@ add_dependencies(symlink_gmod gmod_tracy)
 
 # TODO: use adequate launch command using user steam flags and etc but with
 # imidiate map load, idk
+# Also this is relevant to patched gmod x64
+# See https://github.com/solsticegamestudios/GModPatchTool/issues/232#issuecomment-3938961378
 add_custom_target(
     launch_gmod
     COMMAND
