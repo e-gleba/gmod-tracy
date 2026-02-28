@@ -56,10 +56,12 @@ configure_file("${CMAKE_CURRENT_LIST_DIR}/tracy_loader.lua.in"
 
 set(loader_lua "${CMAKE_CURRENT_BINARY_DIR}/tracy_loader.lua")
 
-# TODO: gmsv or gmcl? those are unused now
-set(gmod_tracy_realm "gmcl" CACHE STRING
-                                  "gmod module realm prefix (gmsv or gmcl)")
-set_property(CACHE gmod_tracy_realm PROPERTY STRINGS "gmsv" "gmcl")
+if(0)
+    # TODO: gmsv or gmcl? those are unused now
+    set(gmod_tracy_realm "gmcl" CACHE STRING
+                                      "gmod module realm prefix (gmsv or gmcl)")
+    set_property(CACHE gmod_tracy_realm PROPERTY STRINGS "gmsv" "gmcl")
+endif()
 
 add_custom_target(
     symlink_gmod
