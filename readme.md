@@ -50,8 +50,6 @@ cmake --preset=clang -DGMOD_LUA_DIR=/path/to/garrysmod/lua .
 cmake --build --preset=clang
 ```
 
-> `GMOD_LUA_DIR` defaults to a hardcoded path — always override it.
-
 ### Dev Workflow (Linux)
 
 ```bash
@@ -79,10 +77,30 @@ GLIBC_TUNABLES=glibc.rtld.optional_static_tls=1024 \
 ### Install (Production)
 
 ```bash
-cmake --install build/clang --config Release
+cmake --workflow clang-full
 ```
 
-Installs `.so` → `$GMOD_LUA_DIR/bin/`, `tracy_loader.lua` → `$GMOD_LUA_DIR/autorun/server/`.
+This generates gmod-tracy-<version>-<os>-<arch>.tar.gz with the following structure:
+
+```text
+
+├── license
+├── lua
+│   ├── autorun
+│   │   └── tracy_loader.lua
+│   └── bin
+│       └── gmsv_gmod_tracy_linux64.dll
+├── readme.md
+└── share
+    └── doc
+```
+
+Extract and copy the `lua/` directory contents to your GMod installation:
+
+```bash
+tar xzf gmod-tracy-*.tar.gz
+cp -r gmod-tracy-*/lua/* /path/to/garrysmod/lua/
+```
 
 ## GLua API
 
@@ -157,10 +175,6 @@ Fetched automatically via [CPM](https://github.com/cpm-cmake/CPM.cmake) — no m
 | `Tracy::TracyClient` | `wolfpld/tracy` | profiler client (`TRACY_ENABLE` always set) |
 | `spdlog` | `gabime/spdlog` | logging |
 | `Microsoft.GSL::GSL` | `microsoft/GSL` | `gsl::not_null`, `gsl::narrow_cast` |
-
-## Roadmap
-
-- [ ] develop
 
 ## References
 
