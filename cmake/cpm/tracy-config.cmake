@@ -56,8 +56,8 @@ cpmaddpackage(
     # "TRACY_ROCPROF_CALIBRATION OFF"      # continuous gpu time calibration (rocm only)
     )
 
-include(ExternalProject)
 if(tracy_ADDED)
+    include(ExternalProject)
     externalproject_add(
         tracy_profiler
         SOURCE_DIR ${tracy_SOURCE_DIR}/profiler
